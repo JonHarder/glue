@@ -21,3 +21,12 @@ func New(body interface{}) *Message {
 		Body:   body,
 	}
 }
+
+// Nil checks to see if this [Message] is uninitialized, i.e. the zero value
+//
+// The assumption is that if its id field is Nil, then the message as a whole
+// is initialized, since the only way to construct a message is through the
+// [New] function.
+func (m *Message) Nil() bool {
+	return m.Id() == uuid.Nil
+}

@@ -1,14 +1,18 @@
 package exchange
 
 import (
-	"github.com/JonHarder/glue/exchange/message"
+	"context"
 	"testing"
+
+	"github.com/JonHarder/glue/exchange/message"
 )
 
-type nilReceiver struct{}
+type constantReceiver struct {
+	always interface{}
+}
 
-func (n *nilReceiver) Receive() (*message.Message, error) {
-	return message.New(nil), nil
+func (c *constantReceiver) Receive() (*message.Message, error) {
+	return message.New(c.always), nil
 }
 
 func TestExchangeWithoutFromOrTwoPanics(t *testing.T) {
@@ -20,9 +24,24 @@ func TestExchangeWithoutFromOrTwoPanics(t *testing.T) {
 	}()
 
 	// The following is the code under test
-	ex.Run()
+	ex.Run(context.Background())
 }
 
 func TestMessageIntegrityThroughSimpleExchange(t *testing.T) {
-	t.Error("Not sure how to just run exchange processing once.")
+	expect := 4
+	n := &constantReceiver{always: expect}
+	ex := New("test")
+	var msg message.Message
+	ex.From(n).To(FuncSender(func(m *message.Message) error {
+		msg = *m
+		return nil
+	}))
+
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, "RUN_ONCE", true)
+	ex.Run(ctx)
+
+	if msg.Body.(int) != expect {
+		t.Errorf("Message body expected: %v, got: %v", expect, msg.Body.(int))
+	}
 }

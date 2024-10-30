@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -28,5 +29,6 @@ func main() {
 			return nil
 		}))
 
-	ex.Run()
+	ctx := context.Background()
+	ex.Run(ctx)
 }

@@ -2,12 +2,13 @@
 //
 // Data comes into the pipeline from a Receiver then gets transformed through any number of Processor transformations, and finally gets delivered out of the end of the pipeline via a Sender.
 // Interanlly, data is stored and trasferred through the pipeline in a Message object.
-//
 package exchange
 
 import (
-	"github.com/JonHarder/glue/exchange/message"
+	"context"
 	"log"
+
+	"github.com/JonHarder/glue/exchange/message"
 )
 
 var directExchangeMap map[string]chan message.Message
@@ -34,6 +35,8 @@ type SendReceiver interface {
 	Receiver
 }
 
+// toFromExchange represents a [SendReceiver] which will send or receive
+// messages directly from (or to) another exchange
 type toFromExchange struct {
 	buffer chan message.Message
 }
@@ -51,16 +54,17 @@ func (e *toFromExchange) Send(m *message.Message) error {
 // Direct creates a [SendReceiver] which sends or receives messages to other
 // exchanges by name.
 //
-//   ex1 := exchange.New("test")
-//   ex1.From(receiver).
-//      .To(exchange.Direct("other-exchange"))
+//		ex1 := exchange.New("test")
+//		ex1.From(receiver).
+//		   .To(exchange.Direct("other-exchange"))
 //
-//   ex2 := exchange.New("test2")
-//   ex2.From(exchange.Direct("other-exchange")).
-//       To(sender)
+//		ex2 := exchange.New("test2")
+//		ex2.From(exchange.Direct("other-exchange")).
+//		    To(sender)
 //
-//   go ex1.Run()
-//   ex2.Run()
+//	     ctx := context.Background()
+//		go ex1.Run(ctx)
+//		ex2.Run(ctx)
 func Direct(name string) SendReceiver {
 	buf, ok := directExchangeMap[name]
 	if !ok {
@@ -108,23 +112,49 @@ func (ex *Exchange) Process(proc Processor) *Exchange {
 	return ex
 }
 
-func (ex *Exchange) runReceive() error {
+func (ex *Exchange) runReceive(ctx context.Context) error {
 	for {
-		m, err := ex.receiver.Receive()
-		if err != nil {
-			log.Printf("ERROR: failed to receive message: %v", err)
-			continue
+		select {
+		case <-ctx.Done():
+			close(ex.inBuffer)
+			log.Printf("runReceive(): exiting. %v", ctx.Err())
+			return nil
+		default:
+			m, err := ex.receiver.Receive()
+			if err != nil {
+				log.Printf("runReceive(): failed to receive message: %v", err)
+				continue
+			}
+			ex.inBuffer <- *m
+			if ctx.Value("RUN_ONCE") == true {
+				close(ex.inBuffer)
+				return nil
+			}
 		}
-		ex.inBuffer <- *m
 	}
 }
 
-func (ex *Exchange) runSend() error {
+func (ex *Exchange) runSend(ctx context.Context, doneCh chan bool) error {
 	for {
-		m := <-ex.outBuffer
-		err := ex.sender.Send(&m)
-		if err != nil {
-			log.Printf("ERROR: could not send message: %v", err)
+		select {
+		case <-ctx.Done():
+			log.Printf("runSend(): context canceled, attempting exit gracefully")
+		case m := <-ex.outBuffer:
+			// check if the message is its zero value
+			if m.Nil() {
+				// if so, the channel has been closed and
+				// there are no more messages to process.
+				// exit the loop.
+				log.Printf("runSend(): Nothing left to send. Exiting.")
+				// Indicate to spawning goroutine that runSend has finished
+				// processing all the messages in the outBuffer
+				doneCh <- true
+				return nil
+			}
+			err := ex.sender.Send(&m)
+			if err != nil {
+				log.Printf("ERROR: could not send message: %v", err)
+			}
 		}
 	}
 }
@@ -132,32 +162,43 @@ func (ex *Exchange) runSend() error {
 // Run starts the Receive, Process, Send loop for an exchange.
 //
 // If the exchange does not have both a From and To configured it will panic.
-func (ex *Exchange) Run() {
-	// TODO: have this take a context to exit.
-	// Pass this context to the runReceive and runSend goruitines.
-	// If cancel signal is emitted, exit receive loop immediately and close
-	// the inBuffer.
-	// Exit the send loop only after attempting to process the remainder
-	// of the messages in [inBuffer].
+func (ex *Exchange) Run(ctx context.Context) {
 	// handle SIGINT and cancel the context.
 	if ex.receiver == nil || ex.sender == nil {
 		panic("Exchange does not have either a 'from' or a 'to'")
 		// log.Panic("Exchange does not have either a 'from' or a 'to'")
 	}
 	log.Printf("Exchange: '%s' starting up...", ex.Name)
-	go ex.runReceive()
-	go ex.runSend()
+	// doneCh is used for runSend to indicate back to this method that it has
+	// finished processing all messages in the outBuffer.
+	// This allows this function to block and wait for runSend to finish before
+	// it itself finishes.
+	doneCh := make(chan bool)
+	go ex.runReceive(ctx)
+	go ex.runSend(ctx, doneCh)
 
-	// read from exchange.inBuffer, run through processors, then send to exchange.outBuffer
 	for {
-		m := <-ex.inBuffer
-		for _, processor := range ex.processors {
-			err := processor.Process(&m)
-			if err != nil {
-				log.Panicf("Failed processing message: %v", err)
+		select {
+		case m := <-ex.inBuffer:
+			if m.Nil() {
+				close(ex.outBuffer)
+				log.Printf("Run(): no more messages from inBuffer. exiting loop")
+				log.Printf("Run(): There are still %d items in the queue", len(ex.outBuffer))
+				// Wait until runSend finishes
+				<-doneCh
+				return
 			}
+			for _, processor := range ex.processors {
+				err := processor.Process(&m)
+				if err != nil {
+					log.Panicf("Failed processing message: %v", err)
+				}
+			}
+			ex.outBuffer <- m
+		case <-ctx.Done():
+			close(ex.outBuffer)
+			break
 		}
-		ex.outBuffer <- m
 	}
 }
 

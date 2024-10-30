@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -37,5 +38,6 @@ func main() {
 	ex.From(&incrementalReceiver{state: 0}).
 		To(&printSender{})
 
-	ex.Run()
+	ctx := context.Background()
+	ex.Run(ctx)
 }
