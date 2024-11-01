@@ -1,0 +1,29 @@
+* TODO Add opentelemetry support to the core run loop
+   - metrics for:
+	 - messages processed
+	 - messages in =inBuffer=
+	 - messages in =outBuffer=
+   - tracing?
+* TODO flesh out a library of out receivers and senders
+   - receivers:
+	 - endpoint poller (periodically hits an endpoint)
+	 - endpoint server (exposes an endpoint to be hit)
+	 - sftp
+	 - local folder
+   - senders:
+	 - endpoint hitter (http)
+	 - local folder: file
+	 - sftp
+	 - log
+* TODO implement some sort of throttling
+   - for senders? Exponential backoff if sends are failing
+   - for receivers? Same deal
+* TODO Scheduled receiver?
+   - higher ordered receiver?
+   #+begin_src go
+	 ex.From(exchange.Scheduled{
+		 minute: 0,
+		 days: []int{1, 2, 3, 4, 5},
+		 sender: mySender,
+	 })
+   #+end_src

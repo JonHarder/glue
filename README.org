@@ -1,0 +1,54 @@
+* Glue
+Stick different kinds of data together with ease.
+
+This project is greatly influenced by [[https://camel.apache.org/][Apache Camel]], including reusing
+some key concepts and terms.
+
+The reasons this package was created are twofold:
+
+  1. What if camel, but [[https://go.dev/][golang]]?
+  2. Apache Camel is a massive, enterprise oriented integration
+     ecosystem. This makes is extremely powerful and flexible, but
+     also opaque and bloated if your needs are much simpler than what
+     it aims to provide. By offering a similarly user-friendly DSL for
+     building pipelines, we can provide many of the benefits of camel
+     but aimed at smaller projects, smaller companies, smaller
+     integrations.
+	 
+Glue is a small core package, augmented by any number of compatible
+receivers and senders allowing you to write an integration between two
+systems with ease.
+
+If there is not currently a receiver or sender that supports your use
+case, building your own is equally simple. Implementing either of the
+two following interfaces is all that's required for making a new
+receiver or sender.
+
+#+begin_src go
+  // A Receiver defines an interface for types which can produce a Message.
+  //
+  // Receivers are used by the From method on Exchange objects.
+  // Receivers are designed to have their Receive method called repeatedly
+  // to produce Message objects.
+  type Receiver interface {
+	  // Gets a message.
+	  Receive() (*message.Message, error)
+  }
+
+  // A Sender defines an interface for types which can send a message somewhere.
+  //
+  // Implementing this interface means your type can be used in the [To] method
+  // of an exchange.
+  type Sender interface {
+	  Send(m *message.Message) error
+  }
+#+end_src
+	 
+** Examples
+
+There are numerous examples in this repository in the
+[[./examples][examples]] folder.
+
+** Future enhancements
+
+[[./todo.org][here]]
