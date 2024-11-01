@@ -62,7 +62,7 @@ func (e *toFromExchange) Send(m *message.Message) error {
 //		ex2.From(exchange.Direct("other-exchange")).
 //		    To(sender)
 //
-//	     ctx := context.Background()
+//	    ctx := context.Background()
 //		go ex1.Run(ctx)
 //		ex2.Run(ctx)
 func Direct(name string) SendReceiver {
@@ -113,48 +113,48 @@ func (ex *Exchange) Process(proc Processor) *Exchange {
 }
 
 func (ex *Exchange) runReceive(ctx context.Context) error {
+	defer close(ex.inBuffer)
 	for {
 		select {
 		case <-ctx.Done():
-			close(ex.inBuffer)
-			log.Printf("runReceive(): exiting. %v", ctx.Err())
+			log.Printf("INFO: runReceive(%s): exiting. %v", ex.Name, ctx.Err())
 			return nil
 		default:
 			m, err := ex.receiver.Receive()
 			if err != nil {
-				log.Printf("runReceive(): failed to receive message: %v", err)
-				continue
+				log.Printf("ERROR: runReceive(%s): failed to receive message: %v", ex.Name, err)
+				if ShouldRunOnce(ctx) {
+					return err
+				} else {
+					continue
+				}
 			}
 			ex.inBuffer <- *m
-			if ctx.Value("RUN_ONCE") == true {
-				close(ex.inBuffer)
+			if ShouldRunOnce(ctx) {
+				log.Printf("INFO: runReceive(%s): Ran once. Stopping runReceive()", ex.Name)
 				return nil
 			}
 		}
 	}
 }
 
-func (ex *Exchange) runSend(ctx context.Context, doneCh chan bool) error {
+func (ex *Exchange) runSend(doneCh chan bool) error {
 	for {
-		select {
-		case <-ctx.Done():
-			log.Printf("runSend(): context canceled, attempting exit gracefully")
-		case m := <-ex.outBuffer:
-			// check if the message is its zero value
-			if m.Nil() {
-				// if so, the channel has been closed and
-				// there are no more messages to process.
-				// exit the loop.
-				log.Printf("runSend(): Nothing left to send. Exiting.")
-				// Indicate to spawning goroutine that runSend has finished
-				// processing all the messages in the outBuffer
-				doneCh <- true
-				return nil
-			}
-			err := ex.sender.Send(&m)
-			if err != nil {
-				log.Printf("ERROR: could not send message: %v", err)
-			}
+		m := <-ex.outBuffer
+		// check if the message is its zero value
+		if m.Nil() {
+			// if so, the channel has been closed and
+			// there are no more messages to process.
+			// exit the loop.
+			log.Printf("INFO: runSend(%s): Nothing left to send. Exiting.", ex.Name)
+			// Indicate to spawning goroutine that runSend has finished
+			// processing all the messages in the outBuffer
+			doneCh <- true
+			return nil
+		}
+		err := ex.sender.Send(&m)
+		if err != nil {
+			log.Printf("ERROR: could not send message: %v", err)
 		}
 	}
 }
@@ -165,41 +165,64 @@ func (ex *Exchange) runSend(ctx context.Context, doneCh chan bool) error {
 func (ex *Exchange) Run(ctx context.Context) {
 	// handle SIGINT and cancel the context.
 	if ex.receiver == nil || ex.sender == nil {
-		panic("Exchange does not have either a 'from' or a 'to'")
+		panic("CRITICAL: Exchange does not have both a 'from' and a 'to'")
 		// log.Panic("Exchange does not have either a 'from' or a 'to'")
 	}
-	log.Printf("Exchange: '%s' starting up...", ex.Name)
+	log.Printf("INFO: Exchange: '%s' starting up...", ex.Name)
 	// doneCh is used for runSend to indicate back to this method that it has
 	// finished processing all messages in the outBuffer.
 	// This allows this function to block and wait for runSend to finish before
 	// it itself finishes.
 	doneCh := make(chan bool)
-	go ex.runReceive(ctx)
-	go ex.runSend(ctx, doneCh)
+	rcvCtx, rcvCancel := context.WithCancel(ctx)
+	go ex.runReceive(rcvCtx)
+	go ex.runSend(doneCh)
+	once := true
 
 	for {
 		select {
 		case m := <-ex.inBuffer:
+			// once the receiver has finished (triggered by rcvCancel()), the inBuffer channel should be
+			// closed and will begin to send the zero value for a Message. Once this happens, we want
+			// to wait until the sender loop exits and sends a message to the doneCh.
+			// Once this happens, we can exit the loop.
 			if m.Nil() {
+				log.Printf("INFO: Run(%s): no more messages from inBuffer. Waiting for runSend() to finish processing %d messages", ex.Name, len(ex.outBuffer))
+				// closing the outBuffer triggers to runSend that there are no more messages
+				// coming and it should exit, sending a signal back to doneCh
 				close(ex.outBuffer)
-				log.Printf("Run(): no more messages from inBuffer. exiting loop")
-				log.Printf("Run(): There are still %d items in the queue", len(ex.outBuffer))
-				// Wait until runSend finishes
 				<-doneCh
+				// This rcvCancel shouldn't be needed here, but the compiler thinks I need it.
+				rcvCancel()
 				return
 			}
 			for _, processor := range ex.processors {
 				err := processor.Process(&m)
 				if err != nil {
-					log.Panicf("Failed processing message: %v", err)
+					log.Panicf("ERROR: Run(%s): Failed processing message: %v", ex.Name, err)
 				}
 			}
 			ex.outBuffer <- m
 		case <-ctx.Done():
-			close(ex.outBuffer)
-			break
+			if once {
+				log.Printf("INFO: Run(%s): received signal to cancel. Canceling runReceive()", ex.Name)
+				rcvCancel()
+				once = false
+			}
 		}
 	}
+}
+
+// RunOnce executes one loop through the [Run] pipeline.
+//
+// All invariants and functionality of [Run] apply here as well.
+func (ex *Exchange) RunOnce(ctx context.Context) {
+	ex.Run(context.WithValue(ctx, "RUN_ONCE", true))
+}
+
+func shouldRunOnce(ctx context.Context) bool {
+	val, ok := ctx.Value("RUN_ONCE").(bool)
+	return ok && val
 }
 
 // New creates a new [Exchange] with the given name.
